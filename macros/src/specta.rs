@@ -10,10 +10,31 @@ pub fn attribute(item: proc_macro::TokenStream) -> syn::Result<proc_macro::Token
     let function = parse_macro_input::parse::<ItemFn>(item)?;
     let wrapper = format_fn_wrapper(&function.sig.ident);
 
+    // While using wasm_bindgen and Specta is rare, this should make the DX nicer.
+    if function.sig.unsafety.is_some()
+        && function
+            .sig
+            .ident
+            .to_string()
+            .starts_with("__wasm_bindgen_generated")
+    {
+        return Err(syn::Error::new_spanned(
+            function.sig.ident,
+            "specta: You must apply the #[specta] macro before the #[wasm_bindgen] macro",
+        ));
+    }
+
     let visibility = &function.vis;
-    let maybe_macro_export = match &visibility {
-        Visibility::Public(_) => quote!(#[macro_export]),
-        _ => Default::default(),
+    let (maybe_macro_export, pub_the_trait) = match &visibility {
+        Visibility::Public(_) => (quote!(#[macro_export]), Default::default()),
+        _ => (
+            Default::default(),
+            quote! {
+                // allow the macro to be resolved with the same path as the function
+                #[allow(unused_imports)]
+                #visibility use #wrapper;
+            },
+        ),
     };
 
     let function_name = &function.sig.ident;
@@ -43,6 +64,11 @@ pub fn attribute(item: proc_macro::TokenStream) -> syn::Result<proc_macro::Token
     let deprecated = common.deprecated_as_tokens(&crate_ref);
     let docs = common.doc;
 
+    let no_return_type = match function.sig.output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, _) => false,
+    };
+
     Ok(quote! {
         #function
 
@@ -55,11 +81,10 @@ pub fn attribute(item: proc_macro::TokenStream) -> syn::Result<proc_macro::Token
             (@signature) => { fn(#(#arg_signatures),*) -> _ };
             (@docs) => { std::borrow::Cow::Borrowed(#docs) };
             (@deprecated) => { #deprecated };
+            (@no_return_type) => { #no_return_type };
         }
 
-        // allow the macro to be resolved with the same path as the function
-        #[allow(unused_imports)]
-        #visibility use #wrapper;
+        #pub_the_trait
     }
     .into())
 }

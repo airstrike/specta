@@ -24,27 +24,23 @@ const _: () = {
 };
 
 impl<'a> Type for &'a str {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        String::inline(type_map, generics)
-    }
+    impl_passthrough!(String);
+}
+
+impl Type for Box<str> {
+    impl_passthrough!(String);
 }
 
 impl<'a, T: Type + 'static> Type for &'a T {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        T::inline(type_map, generics)
-    }
+    impl_passthrough!(T);
 }
 
 impl<T: Type> Type for [T] {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        T::inline(type_map, generics)
-    }
+    impl_passthrough!(T);
 }
 
 impl<'a, T: ?Sized + ToOwned + Type + 'static> Type for std::borrow::Cow<'a, T> {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        T::inline(type_map, generics)
-    }
+    impl_passthrough!(T);
 }
 
 use std::ffi::*;
@@ -106,22 +102,20 @@ impl_as!(
 
 use std::collections::*;
 impl_for_list!(
-    Vec<T> as "Vec"
-    VecDeque<T> as "VecDeque"
-    BinaryHeap<T> as "BinaryHeap"
-    LinkedList<T> as "LinkedList"
-    HashSet<T> as "HashSet"
-    BTreeSet<T> as "BTreeSet"
+    false; Vec<T> as "Vec"
+    false; VecDeque<T> as "VecDeque"
+    false; BinaryHeap<T> as "BinaryHeap"
+    false; LinkedList<T> as "LinkedList"
+    true; HashSet<T> as "HashSet"
+    true; BTreeSet<T> as "BTreeSet"
 );
 
 impl<'a, T: Type> Type for &'a [T] {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        <Vec<T>>::inline(type_map, generics)
-    }
+    impl_passthrough!(Vec<T>);
 }
 
 impl<const N: usize, T: Type> Type for [T; N] {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
+    fn inline(type_map: &mut TypeMap, generics: Generics) -> DataType {
         DataType::List(List {
             ty: Box::new(
                 // TODO: This is cursed. Fix it properly!!!
@@ -131,6 +125,7 @@ impl<const N: usize, T: Type> Type for [T; N] {
                 },
             ),
             length: Some(N),
+            unique: false,
         })
     }
 
@@ -145,33 +140,57 @@ impl<const N: usize, T: Type> Type for [T; N] {
                     },
                 ),
                 length: Some(N),
+                unique: false,
             }),
         }
     }
 }
 
 impl<T: Type> Type for Option<T> {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        DataType::Nullable(Box::new(
-            generics
-                .get(0)
-                .cloned()
-                .unwrap_or_else(|| T::inline(type_map, generics)),
-        ))
+    fn inline(type_map: &mut TypeMap, generics: Generics) -> DataType {
+        let mut ty = None;
+        if let Generics::Provided(generics) = &generics {
+            ty = generics.get(0).cloned()
+        }
+
+        DataType::Nullable(Box::new(match ty {
+            Some(ty) => ty,
+            None => T::inline(type_map, generics),
+        }))
+    }
+
+    fn reference(type_map: &mut TypeMap, generics: &[DataType]) -> Reference {
+        Reference {
+            inner: DataType::Nullable(Box::new(
+                generics
+                    .get(0)
+                    .cloned()
+                    .unwrap_or_else(|| T::reference(type_map, generics).inner),
+            )),
+        }
     }
 }
 
 impl<T: Type, E: Type> Type for std::result::Result<T, E> {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
+    fn inline(type_map: &mut TypeMap, generics: Generics) -> DataType {
         DataType::Result(Box::new((
             T::inline(type_map, generics),
             E::inline(type_map, generics),
         )))
     }
+
+    fn reference(type_map: &mut TypeMap, generics: &[DataType]) -> Reference {
+        Reference {
+            inner: DataType::Result(Box::new((
+                T::reference(type_map, generics).inner,
+                E::reference(type_map, generics).inner,
+            ))),
+        }
+    }
 }
 
 impl<T> Type for std::marker::PhantomData<T> {
-    fn inline(_: &mut TypeMap, _: &[DataType]) -> DataType {
+    fn inline(_: &mut TypeMap, _: Generics) -> DataType {
         DataType::Literal(LiteralType::None)
     }
 }
@@ -183,8 +202,8 @@ impl<T> Type for std::marker::PhantomData<T> {
 pub enum Infallible {}
 
 impl<T: Type> Type for std::ops::Range<T> {
-    fn inline(type_map: &mut TypeMap, _generics: &[DataType]) -> DataType {
-        let ty = Some(T::definition(type_map));
+    fn inline(type_map: &mut TypeMap, _generics: Generics) -> DataType {
+        let ty = Some(T::inline(type_map, Generics::Definition));
         DataType::Struct(StructType {
             name: "Range".into(),
             sid: None,
@@ -219,9 +238,7 @@ impl<T: Type> Type for std::ops::Range<T> {
 }
 
 impl<T: Type> Type for std::ops::RangeInclusive<T> {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-        std::ops::Range::<T>::inline(type_map, generics) // Yeah Serde are cringe
-    }
+    impl_passthrough!(std::ops::Range<T>); // Yeah Serde are cringe
 }
 
 impl_for_map!(HashMap<K, V> as "HashMap");
@@ -247,7 +264,7 @@ struct Duration {
 
 #[cfg(feature = "indexmap")]
 const _: () = {
-    impl_for_list!(indexmap::IndexSet<T> as "IndexSet");
+    impl_for_list!(true; indexmap::IndexSet<T> as "IndexSet");
     impl_for_map!(indexmap::IndexMap<K, V> as "IndexMap");
     impl<K: Type, V: Type> Flatten for indexmap::IndexMap<K, V> {}
 };
@@ -271,7 +288,7 @@ const _: () = {
     }
 
     impl Type for Number {
-        fn inline(_: &mut TypeMap, _: &[DataType]) -> DataType {
+        fn inline(_: &mut TypeMap, _: Generics) -> DataType {
             DataType::Enum(EnumType {
                 name: "Number".into(),
                 sid: None,
@@ -353,23 +370,23 @@ const _: () = {
     }
 
     impl Type for serde_yaml::Mapping {
-        fn inline(_: &mut TypeMap, _: &[DataType]) -> DataType {
+        fn inline(_: &mut TypeMap, _: Generics) -> DataType {
             // We don't type this more accurately because `serde_json` doesn't allow non-string map keys so neither does Specta
             DataType::Unknown
         }
     }
 
     impl Type for serde_yaml::value::TaggedValue {
-        fn inline(_: &mut TypeMap, _: &[DataType]) -> DataType {
-            DataType::Map(Box::new((
-                DataType::Primitive(PrimitiveType::String),
-                DataType::Unknown,
-            )))
+        fn inline(_: &mut TypeMap, _: Generics) -> DataType {
+            DataType::Map(Map {
+                key_ty: Box::new(DataType::Primitive(PrimitiveType::String)),
+                value_ty: Box::new(DataType::Unknown),
+            })
         }
     }
 
     impl Type for serde_yaml::Number {
-        fn inline(_: &mut TypeMap, _: &[DataType]) -> DataType {
+        fn inline(_: &mut TypeMap, _: Generics) -> DataType {
             DataType::Enum(EnumType {
                 name: "Number".into(),
                 sid: None,
@@ -483,16 +500,12 @@ const _: () = {
     );
 
     impl<T: TimeZone> Type for DateTime<T> {
-        fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-            String::inline(type_map, generics)
-        }
+        impl_passthrough!(String);
     }
 
     #[allow(deprecated)]
     impl<T: TimeZone> Type for Date<T> {
-        fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
-            String::inline(type_map, generics)
-        }
+        impl_passthrough!(String);
     }
 };
 
@@ -643,7 +656,7 @@ impl_as!(url::Url as String);
 
 #[cfg(feature = "either")]
 impl<L: Type, R: Type> Type for either::Either<L, R> {
-    fn inline(type_map: &mut TypeMap, generics: &[DataType]) -> DataType {
+    fn inline(type_map: &mut TypeMap, generics: Generics) -> DataType {
         DataType::Enum(EnumType {
             name: "Either".into(),
             sid: None,
@@ -687,6 +700,54 @@ impl<L: Type, R: Type> Type for either::Either<L, R> {
             ],
             generics: vec![],
         })
+    }
+
+    fn reference(type_map: &mut TypeMap, generics: &[DataType]) -> Reference {
+        Reference {
+            inner: DataType::Enum(EnumType {
+                name: "Either".into(),
+                sid: None,
+                repr: EnumRepr::Untagged,
+                skip_bigint_checks: false,
+                variants: vec![
+                    (
+                        "Left".into(),
+                        EnumVariant {
+                            skip: false,
+                            docs: Cow::Borrowed(""),
+                            deprecated: None,
+                            inner: EnumVariants::Unnamed(UnnamedFields {
+                                fields: vec![Field {
+                                    optional: false,
+                                    flatten: false,
+                                    deprecated: None,
+                                    docs: Cow::Borrowed(""),
+                                    ty: Some(L::reference(type_map, generics).inner),
+                                }],
+                            }),
+                        },
+                    ),
+                    (
+                        "Right".into(),
+                        EnumVariant {
+                            skip: false,
+                            docs: Cow::Borrowed(""),
+                            deprecated: None,
+                            inner: EnumVariants::Unnamed(UnnamedFields {
+                                fields: vec![Field {
+                                    optional: false,
+                                    flatten: false,
+                                    deprecated: None,
+                                    docs: Cow::Borrowed(""),
+                                    ty: Some(R::reference(type_map, generics).inner),
+                                }],
+                            }),
+                        },
+                    ),
+                ],
+                generics: vec![],
+            }),
+        }
     }
 }
 

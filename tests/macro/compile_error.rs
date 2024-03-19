@@ -1,6 +1,6 @@
 //! This file is run with the `trybuild` crate to assert compilation errors in the Specta macros.
 
-use specta::Type;
+use specta::{specta, Type};
 
 // Invalid inflection
 #[derive(Type)]
@@ -102,5 +102,11 @@ pub struct InvalidSpectaAttribute1;
 #[derive(Type)]
 #[specta = "todo"]
 pub struct InvalidSpectaAttribute2;
+
+use wasm_bindgen::prelude::wasm_bindgen;
+
+#[wasm_bindgen]
+#[specta]
+pub fn testing() {}
 
 // TODO: https://docs.rs/trybuild/latest/trybuild/#what-to-test

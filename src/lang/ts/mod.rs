@@ -58,7 +58,7 @@ pub fn inline_ref<T: Type>(_: &T, conf: &ExportConfig) -> Output {
 /// Eg. `{ demo: string; };`
 pub fn inline<T: Type>(conf: &ExportConfig) -> Output {
     let mut type_map = TypeMap::default();
-    let ty = T::inline(&mut type_map, &[]);
+    let ty = T::inline(&mut type_map, Generics::NONE);
     is_valid_ty(&ty, &type_map)?;
     let result = datatype(conf, &ty, &type_map);
 
@@ -89,6 +89,58 @@ pub fn export_named_datatype(
         typ,
         type_map,
     )
+}
+
+/// Convert a [FunctionDataType] into a function header like would be used in a `.d.ts` file.
+/// If your function requires a function body you can copy this function into your own codebase.
+///
+/// Eg. `function name();`
+#[cfg(feature = "functions")]
+#[cfg_attr(docsrs, doc(cfg(feature = "functions")))]
+pub fn export_function_header(
+    dt: crate::functions::FunctionDataType,
+    config: &ExportConfig,
+) -> Result<String> {
+    let type_map = TypeMap::default();
+
+    let mut s = config
+        .comment_exporter
+        .map(|v| {
+            v(CommentFormatterArgs {
+                docs: &dt.docs,
+                deprecated: dt.deprecated.as_ref(),
+            })
+        })
+        .unwrap_or_default();
+
+    s.push_str("export ");
+
+    if dt.asyncness {
+        s.push_str("async ");
+    }
+
+    s.push_str("function ");
+
+    s.push_str(&dt.name);
+    s.push_str("(");
+    for (i, (name, ty)) in dt.args.into_iter().enumerate() {
+        if i != 0 {
+            s.push_str(", ");
+        }
+
+        s.push_str(&name);
+        s.push_str(": ");
+        s.push_str(&datatype(config, &ty, &type_map)?);
+    }
+    s.push_str(")");
+
+    if let Some(ty) = dt.result {
+        s.push_str(": ");
+        s.push_str(&datatype(config, &ty, &type_map)?);
+    }
+
+    s.push_str(";");
+    Ok(s)
 }
 
 #[allow(clippy::ptr_arg)]
@@ -207,8 +259,8 @@ pub(crate) fn datatype_inner(ctx: ExportContext, typ: &DataType, type_map: &Type
             format!(
                 // We use this isn't of `Record<K, V>` to avoid issues with circular references.
                 "{{ [key in {}]: {} }}",
-                datatype_inner(ctx.clone(), &def.0, type_map)?,
-                datatype_inner(ctx, &def.1, type_map)?
+                datatype_inner(ctx.clone(), def.key_ty(), type_map)?,
+                datatype_inner(ctx, def.value_ty(), type_map)?
             )
         }
         // We use `T[]` instead of `Array<T>` to avoid issues with circular references.
